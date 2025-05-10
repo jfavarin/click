@@ -5,6 +5,10 @@ build/
 dist/
 wheels/
 *.egg-info
+db/*
+
+# Exceto a própria pasta db
+!db/.gitkeep
 
 # Virtual environments
 .venv
