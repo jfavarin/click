@@ -1,71 +1,104 @@
 import streamlit as st
 import pandas as pd
-import os
-
-# ---------------------
-# FUNÇÕES
-# ---------------------
-df_status = pd.read_csv('db/status.csv')
-df_services = pd.read_csv('db/servicos.csv')
-# Nome do arquivo CSV onde os dados serão salvos
-df_activities = pd.read_csv('db/atividades.csv')
+from services.db_helper import fetch_query, fetch_atividades_por_servico, insert_atividade, update_atividade
 
 # ---------------------
 # INTERFACE
 # ---------------------
-# configuração da tela
 st.set_page_config(layout="wide")
-header = st.container()
-body = st.container()
+st.title("📥 Cadastro de Atividades")
 
-# ---------------------
-# HEADER
-# ---------------------
-with header:
-    st.title("📥 Cadastro de atividades")
+# Carregar dados
+df_status = fetch_query("SELECT id, status FROM status ORDER BY status ASC")
+df_servicos = fetch_query("""
+    SELECT servicos.id, servicos.nome_servico, empresas.id AS cliente_id, empresas.empresa AS cliente
+    FROM servicos
+    INNER JOIN empresas ON servicos.cliente_id = empresas.id
+    ORDER BY servicos.nome_servico ASC
+""")
 
-# Inicializa session_state
-if 'atividades' not in st.session_state:
-    st.session_state.atividades = df_activities.copy()
+# Seleção do serviço
+servico_nome = st.selectbox("Selecione um serviço", df_servicos['nome_servico'])
 
-# Selectbox de serviço
-servico_selecionado = st.selectbox("Selecione um serviço", df_services['Nome do Serviço'])
+if servico_nome:
+    servico_id = df_servicos.loc[df_servicos['nome_servico'] == servico_nome, 'id'].values[0]
+    cliente_id = df_servicos.loc[df_servicos['nome_servico'] == servico_nome, 'cliente_id'].values[0]
+    cliente_nome = df_servicos.loc[df_servicos['nome_servico'] == servico_nome, 'cliente'].values[0]
 
-# Busca cliente correspondente
-cliente_relacionado = df_services.loc[df_services['Nome do Serviço'] == servico_selecionado, 'Cliente'].values[0]
+    st.subheader(f"Atividades de **{servico_nome}**:")
 
-# Filtra dados do serviço
-df_servico_selecionado = st.session_state.atividades[st.session_state.atividades['Serviço'] == servico_selecionado].reset_index(drop=True)
+    # Buscar atividades existentes
+    df_atividades = fetch_atividades_por_servico(servico_id)
 
-# Adicionar nova atividade
-if st.button("➕ Adicionar nova atividade"):
-    nova_atividade = pd.DataFrame([{
-        'Cliente': cliente_relacionado,
-        'Serviço': servico_selecionado,
-        'Atividade': '',
-        'Tempo': '',
-        'Status': '',
-        'Data concluída': '',
-        'Data prevista': ''
-    }])
-    st.session_state.atividades = pd.concat([st.session_state.atividades, nova_atividade], ignore_index=True)
-    st.rerun()
+    # Se ainda não tiver atividades, inicializa DataFrame
+    if df_atividades.empty:
+        df_atividades = pd.DataFrame(columns=[
+            'id', 'cliente', 'servico', 'nome_atividade', 'tempo', 'status', 'data_prevista', 'data_concluida'
+        ])
 
-# Editor de dados
-st.write(f"Atividades de **{servico_selecionado}**:")
-df_editado = st.data_editor(
-    df_servico_selecionado,
-    use_container_width=True,
-    key="editor"
-)
+    # Botão para adicionar nova linha
+    if st.button("➕ Adicionar nova atividade"):
+        nova_linha = pd.DataFrame([{
+            'id': None,
+            'cliente': cliente_nome,
+            'servico': servico_nome,
+            'nome_atividade': '',
+            'tempo': 0,
+            'status': df_status['status'].iloc[0],  # Primeiro status por padrão
+            'data_prevista': pd.to_datetime('today').date(),
+            'data_concluida': None
+        }])
+        df_atividades = pd.concat([df_atividades, nova_linha], ignore_index=True)
 
-# Atualiza session_state com as edições
-if st.button("💾 Salvar alterações"):
-    # Remove antigas linhas desse cliente
-    st.session_state.atividades = st.session_state.atividades[st.session_state.atividades['Serviço'] != servico_selecionado]
-    # Adiciona as novas linhas editadas
-    df_editado['Serviço'] = servico_selecionado  # Garante que o cliente continue marcado
-    st.session_state.atividades = pd.concat([st.session_state.atividades, df_editado], ignore_index=True)
-    # Salva no CSV
-    st.session_state.atividades.to_csv('db/atividades.csv', index=False)
-    st.success("Alterações salvas com sucesso!")
+    # Editor de dados
+    edited_df = st.data_editor(
+        df_atividades,
+        use_container_width=True,
+        key="editor_atividades",
+        column_config={
+            "status": st.column_config.SelectboxColumn(
+                label="Status",
+                options=df_status['status'].tolist()
+            ),
+            "data_prevista": st.column_config.DateColumn(
+                label="Data Prevista",
+                format="DD/MM/YYYY"
+            ),
+            "data_concluida": st.column_config.DateColumn(
+                label="Data Concluída",
+                format="DD/MM/YYYY"
+            )
+        },
+        disabled=["cliente", "servico"],
+        num_rows="dynamic"
+    )
+
+    # Botão salvar alterações
+    if st.button("💾 Salvar alterações"):
+        for idx, row in edited_df.iterrows():
+            status_id = df_status.loc[df_status['status'] == row['status'], 'id'].values[0]
+
+            if pd.isna(row['id']):
+                # Linha nova: INSERT
+                insert_atividade(
+                    cliente_id,
+                    servico_id,
+                    row['nome_atividade'],
+                    row['tempo'],
+                    status_id,
+                    row['data_prevista'],
+                    row['data_concluida']
+                )
+            else:
+                # Linha existente: UPDATE
+                update_atividade(
+                    row['id'],
+                    row['nome_atividade'],
+                    row['tempo'],
+                    status_id,
+                    row['data_prevista'],
+                    row['data_concluida']
+                )
+
+        st.success("Alterações salvas com sucesso!")
+        st.rerun()

@@ -6,6 +6,7 @@ dist/
 wheels/
 *.egg-info
 db/*
+todo.txt
 
 # Exceto a própria pasta db
 !db/.gitkeep

@@ -1,100 +1,94 @@
 import streamlit as st
 import pandas as pd
-import os
-# ---------------------
-# FUNÇÕES
-# ---------------------
-#Importa nome de cliente
-df_tipo = pd.read_csv('db/tipo_de_servico.csv')
-df_clientes = pd.read_csv('db/cadastros.csv')
-df_status = pd.read_csv('db/status.csv')
-df_tags = pd.read_csv('db/tags.csv')
-# Nome do arquivo CSV onde os dados serão salvos
-arquivo_csv = 'db/servicos.csv'
-# Função para salvar o cadastro
-def salvar_cadastro(dados):
-    # Se o arquivo já existe, carregamos o existente para adicionar mais dados
-    if os.path.exists(arquivo_csv):
-        df_existente = pd.read_csv(arquivo_csv)
-        df_novo = pd.concat([df_existente, pd.DataFrame([dados])], ignore_index=True)
-    else:
-        df_novo = pd.DataFrame([dados])
-    
-    # Salva de volta no arquivo
-    df_novo.to_csv(arquivo_csv, index=False)
-
-
+from services.db_helper import fetch_query, insert_servico, update_servico
 
 # ---------------------
 # INTERFACE
 # ---------------------
-# configuração da tela
 st.set_page_config(layout="wide")
 header = st.container()
 body = st.container()
+
+# Carregar tabelas
+df_tipo = fetch_query("SELECT id, tipo_servico FROM tipo_servico ORDER BY tipo_servico ASC")
+df_clientes = fetch_query("SELECT id, empresa FROM empresas ORDER BY empresa ASC")
+df_status = fetch_query("SELECT id, status FROM status ORDER BY status ASC")
+df_tags = fetch_query("SELECT id, tag FROM tags ORDER BY tag ASC")
 
 # ---------------------
 # HEADER
 # ---------------------
 with header:
-    st.title("🗂️ Cadastro de serviços")
+    st.title("🗂️ Cadastro de Serviços (Banco de Dados)")
 
-#Dados
+# FORMULÁRIO
 with st.form(key='cadastro_form'):
-    tipo_servico = st.selectbox('Tipo de Serviço', df_tipo['Tipo de serviço'], index=None)
+    tipo_servico_nome = st.selectbox('Tipo de Serviço', df_tipo['tipo_servico'], index=None)
     nome_servico = st.text_input('Nome do Serviço')
-    cliente = st.selectbox('Cliente', df_clientes['Empresa'], index=None)
-    status = st.selectbox('Status', df_status['Status'], index=None)
-    valor = st.number_input('Valor do Contrato')
-    tag = st.multiselect('Tags', df_tags['Tag'])
+    cliente_nome = st.selectbox('Cliente', df_clientes['empresa'], index=None)
+    status_nome = st.selectbox('Status', df_status['status'], index=None)
+    valor = st.number_input('Valor do Contrato', min_value=0.0, format="%.2f")
+    tags_selecionadas = st.multiselect('Tags', df_tags['tag'])
     data_vencimento = st.date_input('Data de Vencimento')
-    
-    # Botão de envio
+
     enviar = st.form_submit_button('Enviar')
-    
+
     if enviar:
-        dados = {
-            'Tipo de Serviço': tipo_servico,
-            'Nome do Serviço': nome_servico,
-            'Cliente': cliente,
-            'Status': status,
-            'Valor do Contrato': valor,
-            'Tags': tag,
-            'Data de Vencimento': data_vencimento
-        }
-        salvar_cadastro(dados)
+        tipo_servico_id = df_tipo.loc[df_tipo['tipo_servico'] == tipo_servico_nome, 'id'].values[0]
+        cliente_id = df_clientes.loc[df_clientes['empresa'] == cliente_nome, 'id'].values[0]
+        status_id = df_status.loc[df_status['status'] == status_nome, 'id'].values[0]
+        
+        insert_servico(tipo_servico_id, nome_servico, cliente_id, status_id, valor, tags_selecionadas, data_vencimento)
         st.success('Cadastro realizado com sucesso!')
 
-# Mostrar o arquivo CSV atual
-if os.path.exists(arquivo_csv):
-    st.subheader('Cadastros realizados:')
-    df_cadastros = pd.read_csv(arquivo_csv)
+# TABELA DE CADASTROS EXISTENTES
+st.subheader('📄 Cadastros realizados:')
 
-    if not pd.api.types.is_datetime64_any_dtype(df_cadastros['Data de Vencimento']):
-        df_cadastros['Data de Vencimento'] = pd.to_datetime(df_cadastros['Data de Vencimento'])
+df_cadastros = fetch_query("""
+    SELECT
+        servicos.id,
+        empresas.empresa AS cliente,
+        tipo_servico.tipo_servico AS tipo_servico,
+        servicos.nome_servico,
+        status.status AS status,
+        servicos.valor_contrato,
+        servicos.tags,
+        servicos.data_vencimento
+    FROM servicos
+    INNER JOIN empresas ON servicos.cliente_id = empresas.id
+    INNER JOIN tipo_servico ON servicos.tipo_servico_id = tipo_servico.id
+    INNER JOIN status ON servicos.status_id = status.id
+    ORDER BY servicos.criado_em DESC
+""")
 
+if not df_cadastros.empty:
     edited_df = st.data_editor(
         df_cadastros,
         column_config={
-            "Status": st.column_config.SelectboxColumn(
+            "status": st.column_config.SelectboxColumn(
                 label="Status",
-                options=df_status['Status'].tolist(),
+                options=df_status['status'].tolist(),
                 help="Selecione o status atual do serviço"
             ),
-            "Tags": st.column_config.TextColumn(
+            "tags": st.column_config.TextColumn(
                 label="Tags",
-                help="Digite as tags separadas por vírgula"
+                help="Lista de tags (não editável)"
             ),
-            "Data de Vencimento": st.column_config.DateColumn(
+            "data_vencimento": st.column_config.DateColumn(
                 label="Data de Vencimento",
                 format="DD/MM/YYYY",
                 help="Informe a nova data de vencimento"
             )
         },
-        disabled=["Tipo de Serviço", "Nome do Serviço", "Cliente", "Valor do Contrato"],
+        disabled=["cliente", "tipo_servico", "nome_servico", "valor_contrato", "tags"],
         num_rows="dynamic"
     )
 
     if st.button('Salvar alterações'):
-        edited_df.to_csv(arquivo_csv, index=False)
+        for index, row in edited_df.iterrows():
+            novo_status_id = df_status.loc[df_status['status'] == row['status'], 'id'].values[0]
+            tags_lista = row['tags']
+            if isinstance(tags_lista, str):
+                tags_lista = [tag.strip() for tag in tags_lista.strip('[]').replace('"', '').split(",")]
+            update_servico(row['id'], novo_status_id, row['data_vencimento'], tags_lista)
         st.success('Alterações salvas com sucesso!')
